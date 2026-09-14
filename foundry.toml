@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+script = "script"
+test = "test"
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+# GenesisBytecode.t.sol and VerifyPreinstalls.s.sol read the pinned bytecode
+# straight from preinstalls/*.json.
+fs_permissions = [{ access = "read", path = "./preinstalls" }]
+
+[fmt]
+line_length = 100
+tab_width = 4
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
