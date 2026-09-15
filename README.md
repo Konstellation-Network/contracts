@@ -4,7 +4,7 @@ Preinstall Solidity + verification for Konstellation (Foundry). See `ENGINEERING
 in the org root for the full spec.
 
 ```
-src/WKONS.sol            wrapped native token (KASH / esp, 18 decimals)
+src/WKASH.sol            wrapped native token (KASH / esp, 18 decimals) -- post-genesis deploy
 preinstalls/*.json       pinned bytecode for genesis preinstalls, canonical mainnet addresses
 script/VerifyPreinstalls.s.sol   live check: preinstalls/*.json vs what's actually deployed
 test/GenesisBytecode.t.sol       offline check: preinstalls/*.json internal integrity
@@ -28,6 +28,5 @@ forge test
 MAINNET_RPC_URL=https://... forge script script/VerifyPreinstalls.s.sol
 ```
 
-`src/vesting/` is not yet built — it depends on D12 (`ENGINEERING.md §11`), which is decided in
-principle (Solidity vesting, not `x/auth` vesting accounts) but still needs explicit sign-off
-before implementation.
+`src/vesting/` is not yet built. D12 (`ENGINEERING.md §11`) is decided — Solidity vesting
+contracts, not `x/auth` vesting accounts — implementation is the next open item here.

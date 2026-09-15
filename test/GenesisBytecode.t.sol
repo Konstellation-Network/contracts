@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {VmSafe} from "forge-std/Vm.sol";
-import {WKONS} from "../src/WKONS.sol";
+import {WKASH} from "../src/WKASH.sol";
 
 /// @notice Guards the JSON blobs in preinstalls/ against silent drift or corruption.
 /// Each file's `code` is the bytecode konstellation's genesis wiring embeds at `address`
@@ -60,8 +60,8 @@ contract GenesisBytecodeTest is Test {
         return true;
     }
 
-    function test_WKONSDeploysWithNonEmptyRuntimeCode() public {
-        WKONS w = new WKONS();
+    function test_WKASHDeploysWithNonEmptyRuntimeCode() public {
+        WKASH w = new WKASH();
         assertGt(address(w).code.length, 0);
         assertEq(w.decimals(), 18);
         assertEq(w.totalSupply(), 0);

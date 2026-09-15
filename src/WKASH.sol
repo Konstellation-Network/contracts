@@ -2,12 +2,13 @@
 pragma solidity 0.8.28;
 
 /// @title Wrapped KASH
-/// @notice Canonical wrapped native token for Konstellation. 1 WKONS == 1 esp-denominated
+/// @notice Canonical wrapped native token for Konstellation. 1 WKASH == 1 esp-denominated
 /// KASH, 18 decimals (D2, ENGINEERING.md §1/§11). Interface matches WETH9 exactly so existing
-/// wallet, router and aggregator integrations work unmodified.
-contract WKONS {
+/// wallet, router and aggregator integrations work unmodified. Deployed post-genesis (not a
+/// genesis preinstall) -- see ENGINEERING.md §11 rationale.
+contract WKASH {
     string public constant name = "Wrapped KASH";
-    string public constant symbol = "WKONS";
+    string public constant symbol = "WKASH";
     uint8 public constant decimals = 18;
 
     event Approval(address indexed src, address indexed guy, uint256 wad);
@@ -28,10 +29,10 @@ contract WKONS {
     }
 
     function withdraw(uint256 wad) public {
-        require(balanceOf[msg.sender] >= wad, "WKONS: insufficient balance");
+        require(balanceOf[msg.sender] >= wad, "WKASH: insufficient balance");
         balanceOf[msg.sender] -= wad;
         (bool ok,) = msg.sender.call{value: wad}("");
-        require(ok, "WKONS: withdraw transfer failed");
+        require(ok, "WKASH: withdraw transfer failed");
         emit Withdrawal(msg.sender, wad);
     }
 
@@ -50,10 +51,10 @@ contract WKONS {
     }
 
     function transferFrom(address src, address dst, uint256 wad) public returns (bool) {
-        require(balanceOf[src] >= wad, "WKONS: insufficient balance");
+        require(balanceOf[src] >= wad, "WKASH: insufficient balance");
 
         if (src != msg.sender && allowance[src][msg.sender] != type(uint256).max) {
-            require(allowance[src][msg.sender] >= wad, "WKONS: insufficient allowance");
+            require(allowance[src][msg.sender] >= wad, "WKASH: insufficient allowance");
             allowance[src][msg.sender] -= wad;
         }
 
