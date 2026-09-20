@@ -4,3 +4,6 @@ node_modules/
 # Foundry build artifacts
 cache/
 out/
+
+# forge script --broadcast records (dev-chain runs, signed with public dev keys)
+broadcast/
