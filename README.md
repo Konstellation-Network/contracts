@@ -26,7 +26,7 @@ CODEOWNERS                             stricter rule for src/vesting/ and preins
 
 ```shell
 forge build
-forge test          # 56 tests incl. 5 fuzz properties at 1000 runs each ([fuzz] in foundry.toml)
+forge test          # 59 tests incl. 6 fuzz properties at 1000 runs each ([fuzz] in foundry.toml)
 forge fmt --check   # CI runs all three
 ```
 
@@ -102,30 +102,50 @@ A wallet's total is whatever it has ever held, so it can be funded **in genesis*
 the CREATE2 address before the code exists — nothing can move it until the deterministic code
 lands), at deploy time, or by a later transfer; all follow the same schedule.
 
-### TOKENOMICS §7 as wallets
+### TOKENOMICS §7 as wallets (decided 2026-09-20)
 
 `src/vesting/VestingSchedules.sol` is the one place the numbers live; `test/vesting/
-VestingSchedules.t.sol` drives real wallets through §7's year-end table.
+VestingSchedules.t.sol` drives real wallets through §7's year-end table (team 22 / 22 / 88 /
+154 / 220 / 220 M, treasury 50 / 100 / 150 / 200 / 250 M, community 50 / 134 / 204 / 260 /
+302 / 330 M at genesis and the ends of years 1–5).
 
 | Bucket | Wallet | `start` | `cliff` | `duration` |
 |---|---|---|---|---|
-| Team (220 M, per person) | `RevocableVestingWallet` | TGE + 1 y | 0 | 3 y — 0 at the 12-month cliff, then linear (§7: 0 / 73 / 147 / 220 M) |
+| Team (220 M, per person): **10 % liquid at genesis** as a plain balance to the member's address, 90 % locked | `RevocableVestingWallet` for the 90 % | TGE + 1 y | 0 | 3 y — 0 at the 12-month cliff, then linear |
 | Treasury locked (200 M; 50 M liquid stays with the multisig) | `KonstellationVestingWallet` | TGE | 0 | 4 y |
-| Community locked (300 M; 30 M liquid) | 5 × `KonstellationVestingWallet`, one per year | TGE + (k−1) y | 0 | 1 y, amounts 30/25/20/15/10 % |
+| Community: grants 180 M and incentives 100 M, each locked | 5 × `KonstellationVestingWallet` per sub-bucket, one per year | TGE + (k−1) y | 0 | 1 y, amounts 30/25/20/15/10 % (grants 54/45/36/27/18 M, incentives 30/25/20/15/10 M) |
+| Community-pool seed (50 M) | **none** — a Cosmos module account, written into genesis `distribution` state; the §4.1.1 guard refuses EVM value into it | | | |
 
 A year is 365 days. The community shape (front-loaded, decreasing slope) is piecewise linear and
-one linear wallet cannot express it; five yearly tranche wallets express it exactly.
+one linear wallet cannot express it; five yearly tranche wallets express it exactly. Genesis
+float is 322 M (32.2 %): validators 120 M + liquidity 80 M + treasury 50 M + pool seed 50 M +
+team 22 M.
 
 ### Deploying a schedule
 
 `script/DeployVesting.s.sol` reads a JSON config (`VESTING_CONFIG`, default
-`script/config/vesting.example.json`; amounts in whole KASH, the *locked* part of each bucket):
+`script/config/vesting.example.json`; amounts in whole KASH — the *whole* grant for `team`, which
+the script splits 10 % liquid / 90 % wallet; the *locked* part for `treasury` and `community`):
 
 ```shell
-forge script script/DeployVesting.s.sol --sig "predict()"     # addresses + amounts, for genesis allocations
+forge script script/DeployVesting.s.sol --sig "predict()"     # genesis allocation list (below)
 forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast   # deploy, idempotent
 forge script script/DeployVesting.s.sol --sig "fund()" --rpc-url $RPC --private-key $KEY --broadcast
     # testnets/dev only: top each wallet up from the broadcaster; on mainnet genesis pre-funds them
+```
+
+`predict()` prints one line per genesis allocation — every wallet with its locked amount, then
+every team member's address with their liquid 10 % — and the totals:
+
+```
+treasury-locked          0x1794fa…b433  200000000  wallet non-revocable
+community-grants-y1      0x1EDA07…E3dd   54000000  wallet non-revocable
+…
+team-founder-1           0x9989F0…04f3   99000000  wallet revocable
+team-founder-1-liquid    0x200000…0001   11000000  liquid
+locked in vesting wallets (KASH): 678000000
+liquid to team members (KASH):    22000000
+total (KASH):                     700000000
 ```
 
 Salts are `keccak256("konstellation-network/contracts:vesting:v1:" ‖ label)`; labels must be unique.

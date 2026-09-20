@@ -28,8 +28,8 @@ contract DeployVestingTest is Test {
 
     function test_PlanExpandsExampleConfig() public view {
         DeployVestingScript.Wallet[] memory w = script.plan(CONFIG);
-        // 1 treasury + 3 community x 5 tranches + 2 team
-        assertEq(w.length, 1 + 3 * 5 + 2);
+        // 1 treasury + 2 community x 5 tranches + 2 team
+        assertEq(w.length, 1 + 2 * 5 + 2);
 
         uint256 total;
         uint256 revocable;
@@ -42,8 +42,40 @@ contract DeployVestingTest is Test {
                 assertTrue(w[i].addr != w[j].addr, "address collision");
             }
         }
-        assertEq(total, 720_000_000 ether, "220 M team + 200 M treasury + 300 M community");
+        assertEq(total, 678_000_000 ether, "198 M team locked + 200 M treasury + 280 M community");
         assertEq(revocable, 2, "only team grants are revocable");
+    }
+
+    function test_AllocationsListWalletsThenTeamLiquid() public view {
+        DeployVestingScript.Wallet[] memory w = script.plan(CONFIG);
+        DeployVestingScript.Allocation[] memory a = script.allocations(CONFIG);
+        assertEq(a.length, w.length + 2, "one liquid entry per team grant");
+
+        uint256 locked;
+        uint256 liquid;
+        for (uint256 i = 0; i < a.length; i++) {
+            if (i < w.length) {
+                assertTrue(a[i].isWallet);
+                assertEq(a[i].addr, w[i].addr);
+                assertEq(a[i].amount, w[i].amount);
+                assertEq(a[i].label, w[i].label);
+                locked += a[i].amount;
+            } else {
+                assertFalse(a[i].isWallet);
+                liquid += a[i].amount;
+            }
+        }
+        assertEq(locked, 678_000_000 ether);
+        assertEq(liquid, 22_000_000 ether, "10 % of the 220 M team bucket");
+        assertEq(locked + liquid, 700_000_000 ether, "team 220 + treasury 200 + community 280");
+
+        // The liquid 10 % goes to the member's own address, not to a contract.
+        assertEq(a[w.length].label, "team-founder-1-liquid");
+        assertEq(a[w.length].addr, 0x2000000000000000000000000000000000000001);
+        assertEq(a[w.length].amount, 11_000_000 ether);
+        assertEq(a[w.length + 1].label, "team-founder-2-liquid");
+        assertEq(a[w.length + 1].addr, 0x2000000000000000000000000000000000000002);
+        assertEq(a[w.length + 1].amount, 11_000_000 ether);
     }
 
     function test_PlanIsDeterministic() public view {
@@ -81,7 +113,7 @@ contract DeployVestingTest is Test {
                 assertEq(t.revoker(), REVOKER);
                 assertEq(t.treasury(), TREASURY);
                 assertFalse(t.revoked());
-                assertEq(x.amount, 110_000_000 ether);
+                assertEq(x.amount, 99_000_000 ether, "90 % of the 110 M grant");
             } else {
                 KonstellationVestingWallet t = KonstellationVestingWallet(payable(x.addr));
                 assertTrue(t.owner() != address(0));
@@ -136,23 +168,23 @@ contract DeployVestingTest is Test {
         }
 
         // Team wallet: 0 at the cliff, 1/3 a year later.
-        RevocableVestingWallet team = RevocableVestingWallet(payable(planned[16].addr));
-        assertEq(planned[16].label, "team-founder-1");
+        RevocableVestingWallet team = RevocableVestingWallet(payable(planned[11].addr));
+        assertEq(planned[11].label, "team-founder-1");
         vm.warp(TGE + YEAR);
         assertEq(team.releasable(), 0);
         vm.warp(TGE + 2 * YEAR);
-        assertEq(team.releasable(), uint256(110_000_000 ether) / 3);
+        assertEq(team.releasable(), uint256(99_000_000 ether) / 3);
 
         // And the D12 revoke works on the deployed instance.
         vm.prank(REVOKER);
         team.revoke();
-        assertEq(TREASURY.balance, 110_000_000 ether - uint256(110_000_000 ether) / 3);
+        assertEq(TREASURY.balance, 99_000_000 ether - uint256(99_000_000 ether) / 3);
     }
 
     /// @dev Testnet path: nothing in genesis, `fund()` tops every wallet up from the broadcaster.
     function test_FundTopsUpToConfiguredAmounts() public {
         DeployVestingScript.Wallet[] memory planned = script.run();
-        vm.deal(address(script), 720_000_000 ether);
+        vm.deal(address(script), 678_000_000 ether);
         // One wallet already partly funded: only the shortfall is sent.
         vm.deal(planned[0].addr, 1 ether);
 

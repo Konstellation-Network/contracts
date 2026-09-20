@@ -14,13 +14,19 @@ import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
 /// CREATE2 deploy later puts the (deterministic) vesting code on top. Anyone can run the deploy;
 /// the result is identical whoever does.
 ///
-/// Config → wallets (`VestingSchedules` holds the numbers):
-/// - `team`      → one `RevocableVestingWallet` (revoker / treasury from the config header)
-/// - `treasury`  → one `KonstellationVestingWallet`
-/// - `community` → five `KonstellationVestingWallet`s, `<label>-y1` … `-y5`
+/// Config → wallets (`VestingSchedules` holds the numbers; amounts in whole KASH):
+/// - `team`      → the whole grant: 10 % is a plain genesis balance to the beneficiary (no
+///                 contract), 90 % goes into one `RevocableVestingWallet` (revoker / treasury
+///                 from the config header)
+/// - `treasury`  → the locked part, one `KonstellationVestingWallet`
+/// - `community` → the locked part, five `KonstellationVestingWallet`s, `<label>-y1` … `-y5`
+///
+/// `predict()` prints the genesis allocation list: every wallet (locked amounts) and every team
+/// beneficiary (liquid amounts). The 50 M community-pool seed is genesis `distribution` state and
+/// is not modelled here.
 ///
 /// Usage (VESTING_CONFIG defaults to script/config/vesting.example.json):
-///   forge script script/DeployVesting.s.sol --sig "predict()"                   # plan + addresses
+///   forge script script/DeployVesting.s.sol --sig "predict()"                   # allocations
 ///   forge script script/DeployVesting.s.sol --rpc-url ... --broadcast           # deploy
 ///   forge script script/DeployVesting.s.sol --sig "fund()" --rpc-url ... --broadcast
 ///     # testnets only: top each wallet up to its amount from the broadcaster
@@ -34,6 +40,15 @@ contract DeployVestingScript is Script {
         address beneficiary;
         string kind;
         string label;
+    }
+
+    /// @dev One genesis allocation: a vesting wallet's locked amount, or a team member's liquid
+    /// 10 % paid straight to their address.
+    struct Allocation {
+        string label;
+        address addr;
+        uint256 amount; // esp (wei)
+        bool isWallet;
     }
 
     /// @dev One wallet to deploy.
@@ -110,11 +125,47 @@ contract DeployVestingScript is Script {
         }
     }
 
+    /// @notice The genesis allocation list for a config: one entry per wallet (its locked amount,
+    /// `isWallet = true`) followed by one entry per team grant's liquid 10 % at the beneficiary
+    /// (`<label>-liquid`, `isWallet = false`). The sum is every KASH the config accounts for.
+    function allocations(string memory path) public view returns (Allocation[] memory list) {
+        Wallet[] memory wallets = plan(path);
+        GrantConfig[] memory grants =
+            abi.decode(vm.parseJson(vm.readFile(path), ".grants"), (GrantConfig[]));
+
+        uint256 liquidCount;
+        for (uint256 i = 0; i < grants.length; i++) {
+            if (_isKind(grants[i], "team")) liquidCount++;
+        }
+        list = new Allocation[](wallets.length + liquidCount);
+
+        uint256 n;
+        for (uint256 i = 0; i < wallets.length; i++) {
+            list[n++] = Allocation({
+                label: wallets[i].label,
+                addr: wallets[i].addr,
+                amount: wallets[i].amount,
+                isWallet: true
+            });
+        }
+        for (uint256 i = 0; i < grants.length; i++) {
+            if (!_isKind(grants[i], "team")) continue;
+            (uint256 liquid,) = VestingSchedules.teamSplit(grants[i].amountKash * 1 ether);
+            list[n++] = Allocation({
+                label: string.concat(grants[i].label, "-liquid"),
+                addr: grants[i].beneficiary,
+                amount: liquid,
+                isWallet: false
+            });
+        }
+    }
+
     function _team(Header memory h, GrantConfig memory g) internal pure returns (Wallet memory) {
         (uint64 start, uint64 cliff, uint64 duration) = VestingSchedules.team(h.tge);
+        (, uint256 locked) = VestingSchedules.teamSplit(g.amountKash * 1 ether);
         bytes memory args = abi.encode(g.beneficiary, start, cliff, duration, h.revoker, h.treasury);
         bytes memory initCode = abi.encodePacked(type(RevocableVestingWallet).creationCode, args);
-        return _wallet(h.deployer, g.label, initCode, g.amountKash * 1 ether, true);
+        return _wallet(h.deployer, g.label, initCode, locked, true);
     }
 
     function _treasury(Header memory h, GrantConfig memory g)
@@ -143,28 +194,42 @@ contract DeployVestingScript is Script {
         return _wallet(h.deployer, label, initCode, amount, false);
     }
 
-    /// @notice Prints the plan: one line per wallet, `label address amountKash revocable`, then
-    /// the total. The address/amount pairs are what a genesis allocation file needs.
-    function predict() external view returns (Wallet[] memory wallets) {
-        wallets = plan(configPath());
-        uint256 total;
-        console.log("config:", configPath());
+    /// @notice Prints the genesis allocation list, one line per entry:
+    /// `label address amountKash wallet|liquid [revocable|non-revocable]`, then the totals
+    /// (locked in wallets, liquid to team members, and their sum). The address/amount pairs are
+    /// what `networks/<net>/allocations.json` needs.
+    function predict() external view returns (Allocation[] memory list) {
+        string memory path = configPath();
+        Wallet[] memory wallets = plan(path);
+        list = allocations(path);
+        uint256 locked;
+        uint256 liquid;
+        console.log("config:", path);
         console.log("Create2Deployer:", Create2DeployerLib.addr(vm));
-        for (uint256 i = 0; i < wallets.length; i++) {
-            Wallet memory x = wallets[i];
+        for (uint256 i = 0; i < list.length; i++) {
+            Allocation memory a = list[i];
+            string memory kind = "liquid";
+            if (a.isWallet) {
+                kind = wallets[i].revocable ? "wallet revocable" : "wallet non-revocable";
+                locked += a.amount;
+            } else {
+                liquid += a.amount;
+            }
             console.log(
                 string.concat(
-                    x.label,
+                    a.label,
                     " ",
-                    vm.toString(x.addr),
+                    vm.toString(a.addr),
                     " ",
-                    vm.toString(x.amount / 1 ether),
-                    x.revocable ? " revocable" : " non-revocable"
+                    vm.toString(a.amount / 1 ether),
+                    " ",
+                    kind
                 )
             );
-            total += x.amount;
         }
-        console.log("total KASH in vesting:", total / 1 ether);
+        console.log("locked in vesting wallets (KASH):", locked / 1 ether);
+        console.log("liquid to team members (KASH):   ", liquid / 1 ether);
+        console.log("total (KASH):                    ", (locked + liquid) / 1 ether);
     }
 
     /// @notice Deploys every wallet in the plan that does not exist yet, then checks each one

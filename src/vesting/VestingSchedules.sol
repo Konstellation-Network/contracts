@@ -2,25 +2,27 @@
 pragma solidity 0.8.28;
 
 /// @title TOKENOMICS.md §7 vesting schedules, as wallet parameters
-/// @notice Pure functions mapping the genesis-allocation buckets of TOKENOMICS.md §7 onto
-/// `KonstellationVestingWallet` constructor parameters `(start, cliff, duration)`, given the
-/// genesis (TGE) timestamp. Not deployed; used by `script/DeployVesting.s.sol` and its tests so
-/// that the numbers live in exactly one place. A "month" is 1/12 of a 365-day year.
+/// @notice Pure functions mapping the genesis-allocation buckets of TOKENOMICS.md §7 (as decided
+/// 2026-09-20) onto `KonstellationVestingWallet` constructor parameters `(start, cliff, duration)`
+/// and amounts, given the genesis (TGE) timestamp. Not deployed; used by
+/// `script/DeployVesting.s.sol` and its tests so that the numbers live in exactly one place. A
+/// vesting year is 365 days; a "month" is 1/12 of that.
 ///
-/// | Bucket    | §7 wording                                          | Here                                     |
-/// |-----------|-----------------------------------------------------|------------------------------------------|
-/// | Team      | 12-month cliff, then linear over 36 months (4 years) | start = TGE + 1y, cliff 0, duration 3y  |
-/// | Treasury  | 20 % liquid at genesis, remainder linear over 48 mo  | start = TGE, cliff 0, duration 4y       |
-/// | Community | 300 M locked, released 30/25/20/15/10 % per year     | 5 wallets, year k linear over year k    |
+/// | Bucket    | §7 wording                                                    | Here                                    |
+/// |-----------|---------------------------------------------------------------|-----------------------------------------|
+/// | Team      | 10 % liquid at genesis; 90 %: 12-month cliff, linear 36 months | liquid = plain genesis balance to the member; locked 90 %: start = TGE + 1y, cliff 0, duration 3y |
+/// | Treasury  | 20 % liquid at genesis, remainder linear over 48 months        | start = TGE, cliff 0, duration 4y       |
+/// | Community | grants 180 M + incentives 100 M, 30/25/20/15/10 % per year     | per sub-bucket, 5 wallets, year k linear over year k |
 ///
-/// The team shape is "nothing at the cliff, then linear from zero" — §7's year table reads
-/// 0 / 73 M / 147 M / 220 M at the ends of years 1–4 — so the wallet's `start` is the cliff date
-/// and its own `cliff` parameter is 0. (`start = TGE, cliff = 1y, duration = 4y` would instead
-/// unlock 25 % at the cliff, which is not what §7 says.)
+/// The team's locked part is "nothing at the cliff, then linear from zero" — §7's year table
+/// reads 22 / 22 / 88 / 154 / 220 / 220 M (genesis, then ends of years 1–5) — so the wallet's
+/// `start` is the cliff date and its own `cliff` parameter is 0. (`start = TGE, cliff = 1y,
+/// duration = 4y` would instead unlock a quarter at the cliff, which is not what §7 says.)
 ///
 /// The community schedule is piecewise linear with a decreasing slope, which one linear wallet
-/// cannot express; five non-revocable wallets, one per year, express it exactly. The liquid
-/// parts of §7 (30 M community, 50 M treasury) never enter a wallet.
+/// cannot express; five non-revocable wallets, one per year, express it exactly. What never
+/// enters a wallet: the team's liquid 10 %, the treasury's liquid 50 M, and the 50 M community
+/// pool seed (a Cosmos module account, written straight into genesis `distribution` state).
 library VestingSchedules {
     /// @notice One vesting year.
     uint64 internal constant YEAR = 365 days;
@@ -29,6 +31,8 @@ library VestingSchedules {
     uint64 internal constant TEAM_CLIFF = YEAR;
     /// @notice Team: linear period after the cliff.
     uint64 internal constant TEAM_LINEAR = 3 * YEAR;
+    /// @notice Team: share of each grant paid out liquid at genesis, in basis points.
+    uint256 internal constant TEAM_LIQUID_BPS = 1000;
     /// @notice Treasury: linear period from genesis.
     uint64 internal constant TREASURY_LINEAR = 4 * YEAR;
     /// @notice Community: number of yearly tranches.
@@ -38,13 +42,21 @@ library VestingSchedules {
     /// @notice Tranche k's share of the locked community amount, in basis points.
     error InvalidTranche(uint256 index);
 
-    /// @notice Team grant parameters (revocable wallet).
+    /// @notice Team grant parameters for the locked 90 % (revocable wallet).
     /// @param tge genesis timestamp.
     /// @return start schedule start (the cliff date).
     /// @return cliff always 0 — see library NatSpec.
     /// @return duration linear period.
     function team(uint64 tge) internal pure returns (uint64 start, uint64 cliff, uint64 duration) {
         return (tge + TEAM_CLIFF, 0, TEAM_LINEAR);
+    }
+
+    /// @notice Splits a whole team grant into its liquid genesis balance and the amount that
+    /// goes into the member's vesting wallet. `liquid + locked == grant` exactly.
+    /// @param grant the member's whole allocation, in esp (wei).
+    function teamSplit(uint256 grant) internal pure returns (uint256 liquid, uint256 locked) {
+        liquid = grant * TEAM_LIQUID_BPS / BPS;
+        locked = grant - liquid;
     }
 
     /// @notice Treasury locked-tranche parameters (non-revocable wallet).
