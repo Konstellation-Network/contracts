@@ -146,14 +146,66 @@ contract KonstellationVestingWalletTest is Test {
 
     // --- ownership ----------------------------------------------------------------------------
 
-    function test_TransferOwnershipMovesTheBeneficiary() public {
+    function test_TransferOwnershipIsTwoStep() public {
         address newBeneficiary = makeAddr("new");
         vm.prank(beneficiary);
         wallet.transferOwnership(newBeneficiary);
+        // Nothing moved yet: releases still pay the current owner.
+        assertEq(wallet.owner(), beneficiary);
+        assertEq(wallet.pendingOwner(), newBeneficiary);
         vm.warp(tge + YEAR);
         wallet.release();
+        assertEq(beneficiary.balance, TOTAL / 4);
+        assertEq(newBeneficiary.balance, 0);
+
+        // Only the proposed address can accept.
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector, makeAddr("stranger")
+            )
+        );
+        wallet.acceptOwnership();
+
+        vm.prank(newBeneficiary);
+        wallet.acceptOwnership();
+        assertEq(wallet.owner(), newBeneficiary);
+        assertEq(wallet.pendingOwner(), address(0));
+        vm.warp(tge + 2 * YEAR);
+        wallet.release();
         assertEq(newBeneficiary.balance, TOTAL / 4);
-        assertEq(beneficiary.balance, 0);
+        assertEq(beneficiary.balance, TOTAL / 4);
+    }
+
+    function test_TransferOwnershipToZeroCancelsPending() public {
+        vm.startPrank(beneficiary);
+        wallet.transferOwnership(makeAddr("new"));
+        wallet.transferOwnership(address(0));
+        vm.stopPrank();
+        assertEq(wallet.pendingOwner(), address(0));
+        assertEq(wallet.owner(), beneficiary);
+    }
+
+    /// @dev L1: a wallet owning itself would count its own balance as released and corrupt the
+    /// accounting; refused outright (and two-step means it could never accept anyway).
+    function test_RevertWhen_TransferOwnershipToSelf() public {
+        vm.prank(beneficiary);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KonstellationVestingWallet.InvalidBeneficiary.selector, address(wallet)
+            )
+        );
+        wallet.transferOwnership(address(wallet));
+    }
+
+    function test_RevertWhen_TransferOwnershipNotOwner() public {
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector, makeAddr("stranger")
+            )
+        );
+        wallet.transferOwnership(makeAddr("new"));
     }
 
     function test_RevertWhen_RenounceOwnership() public {

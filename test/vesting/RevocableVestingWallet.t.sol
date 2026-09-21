@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
+import {KonstellationVestingWallet} from "../../src/vesting/KonstellationVestingWallet.sol";
 import {RevocableVestingWallet} from "../../src/vesting/RevocableVestingWallet.sol";
 
 /// @dev A treasury that re-enters `revoke()` when paid.
@@ -33,6 +34,35 @@ contract ReenteringBeneficiary {
     receive() external payable {
         if (depth < 3) {
             depth++;
+            target.release();
+        }
+    }
+}
+
+/// @dev werc20-like: `balanceOf` mirrors the native balance and `transfer` would move native
+/// value -- the cosmos/evm precompile shape that makes OZ's ERC-20 release path a double spend.
+contract WERC20Mirror {
+    function balanceOf(address a) external view returns (uint256) {
+        return a.balance;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        revert("would move native");
+    }
+}
+
+/// @dev A treasury that calls `release()` while being paid by `revoke()`.
+contract TreasuryReleasesDuringRevoke {
+    RevocableVestingWallet public target;
+    bool internal done;
+
+    function setTarget(RevocableVestingWallet t) external {
+        target = t;
+    }
+
+    receive() external payable {
+        if (!done) {
+            done = true;
             target.release();
         }
     }
@@ -209,6 +239,8 @@ contract RevocableVestingWalletTest is Test {
         address buyer = makeAddr("buyer");
         vm.prank(member);
         wallet.transferOwnership(buyer);
+        vm.prank(buyer);
+        wallet.acceptOwnership();
         vm.warp(start + YEAR);
         _revoke();
         wallet.release();
@@ -331,5 +363,53 @@ contract RevocableVestingWalletTest is Test {
         assertEq(w.releasable(), expectedVested);
         w.release();
         assertEq(member.balance, expectedVested);
+    }
+
+    // --- review round (PR #2) ------------------------------------------------------------------
+
+    /// @dev Every ERC-20 entry point is inert against a werc20-shaped token, and the native
+    /// accounting is untouched by its presence.
+    function test_WERC20MirrorIsClosed() public {
+        WERC20Mirror t = new WERC20Mirror();
+        vm.warp(start + 3 * YEAR);
+        assertEq(wallet.vestedAmount(address(t), uint64(block.timestamp)), 0);
+        assertEq(wallet.releasable(address(t)), 0);
+        assertEq(wallet.released(address(t)), 0);
+        vm.expectRevert(KonstellationVestingWallet.ERC20ReleaseDisabled.selector);
+        wallet.release(address(t));
+        wallet.release();
+        assertEq(member.balance, GRANT);
+    }
+
+    /// @dev A treasury that re-enters `release()` during `revoke()`: the member gets exactly the
+    /// vested part, the treasury the rest, nothing is left behind.
+    function test_TreasuryReenteringReleaseConservesFunds() public {
+        TreasuryReleasesDuringRevoke t = new TreasuryReleasesDuringRevoke();
+        RevocableVestingWallet w = new RevocableVestingWallet{value: 90 ether}(
+            member, start, 0, 3 * YEAR, foundation, address(t)
+        );
+        t.setTarget(w);
+        vm.warp(start + YEAR); // 30 vested
+        vm.prank(foundation);
+        w.revoke();
+        assertEq(address(t).balance, 60 ether);
+        assertEq(member.balance, 30 ether);
+        assertEq(address(w).balance, 0);
+        assertEq(w.releasable(), 0);
+    }
+
+    /// @dev Revoke while an ownership transfer is pending: the pending owner can still accept and
+    /// then release the frozen vested part.
+    function test_RevokeWithPendingOwner() public {
+        address next = makeAddr("next");
+        vm.prank(member);
+        wallet.transferOwnership(next);
+        vm.warp(start + YEAR);
+        _revoke();
+        vm.prank(next);
+        wallet.acceptOwnership();
+        wallet.release();
+        assertEq(next.balance, GRANT / 3);
+        assertEq(member.balance, 0);
     }
 }

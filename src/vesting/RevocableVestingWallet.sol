@@ -15,8 +15,11 @@ import {KonstellationVestingWallet} from "./KonstellationVestingWallet.sol";
 /// wallet holds — including any KASH sent to it later — belongs to the beneficiary, so no funds
 /// can get stuck.
 ///
-/// `revoker` and `treasury` are immutable: both are expected to be multisigs whose address is
-/// stable across signer rotation. `treasury` must accept plain native transfers.
+/// `revoker` and `treasury` are immutable, so both MUST be address-stable for the life of the
+/// grant (4 years): an EOA, or a contract multisig whose address survives signer rotation (a
+/// Safe does). A Cosmos `x/auth` multisig is NOT address-stable -- its address is derived from
+/// the member pubkeys and threshold, so any membership change is a new address -- and must not
+/// be used here. `treasury` must accept plain native transfers, else `revoke()` reverts.
 contract RevocableVestingWallet is KonstellationVestingWallet {
     /// @notice The only address allowed to call `revoke()` (the foundation multisig).
     address public immutable revoker;
