@@ -53,8 +53,11 @@ get the same result.
 
 To keep the init code stable, `foundry.toml` strips the CBOR metadata / IPFS hash from bytecode
 (`bytecode_hash = "none"`, `cbor_metadata = false`): a comment edit does not move an address; a
-change to compiled code, `solc`, `optimizer_runs` or `evm_version` does. Blockscout verifies
-such bytecode as a partial match.
+change to compiled code, `solc`, `optimizer_runs` or `evm_version` can. Blockscout verifies
+such bytecode as a partial match. Compiler pin: `solc = 0.8.37`, `evm_version = prague`
+(the chain's fork -- cosmos/evm v0.7.3 `PragueTime = 0`; Osaka is not enabled, see
+`foundry.toml`), optimizer 200 runs. The 2026-09-21 move from 0.8.28/cancun to 0.8.37/prague
+produced byte-identical bytecode for every contract here, so no address changed.
 
 ### WKASH
 

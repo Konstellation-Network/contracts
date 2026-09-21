@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity 0.8.37;
 
 /// @title TOKENOMICS.md §7 vesting schedules, as wallet parameters
 /// @notice Pure functions mapping the genesis-allocation buckets of TOKENOMICS.md §7 (as decided

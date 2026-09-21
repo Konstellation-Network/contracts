@@ -4,8 +4,13 @@ out = "out"
 libs = ["lib"]
 script = "script"
 test = "test"
-solc = "0.8.28"
-evm_version = "cancun"
+solc = "0.8.37"
+# Konstellation runs the Prague fork (cosmos/evm v0.7.3 default: PragueTime = 0). Osaka is
+# deliberately NOT enabled on the chain -- its EIP-7951 P256VERIFY precompile at 0x100 collides
+# with cosmos/evm's own p256 precompile at that address, untested upstream -- so "osaka" here
+# would emit CLZ (EIP-7939), an invalid opcode on our chain. Do not raise this above prague
+# without the chain having activated the fork first.
+evm_version = "prague"
 optimizer = true
 optimizer_runs = 200
 # No CBOR metadata / IPFS hash appended to bytecode. WKASH and the vesting wallets are deployed

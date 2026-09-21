@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity 0.8.37;
 
 /// @title Wrapped KASH
 /// @notice Canonical wrapped native token for Konstellation. 1 WKASH == 1 esp-denominated

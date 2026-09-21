@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity 0.8.37;
 
 import {VestingWallet} from "@openzeppelin/contracts/finance/VestingWallet.sol";
 import {VestingWalletCliff} from "@openzeppelin/contracts/finance/VestingWalletCliff.sol";
