@@ -5,6 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {WKASH} from "../src/WKASH.sol";
 import {DeployWKASHScript} from "../script/DeployWKASH.s.sol";
 import {Create2DeployerLib, ICreate2Deployer} from "../script/lib/Create2Deployer.sol";
+import {InitCodePins} from "../script/lib/InitCodePins.sol";
 
 /// @notice Pins the WKASH deployment address. The preinstalled Create2Deployer's real bytecode
 /// (from preinstalls/Create2Deployer.json) is etched at its canonical address, the deploy script
@@ -26,6 +27,14 @@ contract DeployWKASHTest is Test {
         deployer = Create2DeployerLib.addr(vm);
         vm.etch(deployer, Create2DeployerLib.code(vm));
         script = new DeployWKASHScript();
+    }
+
+    function test_ScriptChecksThePinBeforeEmittingAnAddress() public pure {
+        // initCode() is what predict()/run() hash; it reverts on a drifted build.
+        assertEq(
+            keccak256(InitCodePins.WKASH_INIT == bytes32(0) ? bytes("") : type(WKASH).creationCode),
+            InitCodePins.WKASH_INIT
+        );
     }
 
     function test_SaltIsTheDocumentedPreimage() public view {

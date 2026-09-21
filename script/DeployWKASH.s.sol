@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Script, console} from "forge-std/Script.sol";
 import {WKASH} from "../src/WKASH.sol";
 import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
+import {InitCodePins} from "./lib/InitCodePins.sol";
 
 /// @notice Deploys WKASH post-genesis through the preinstalled Create2Deployer with a fixed salt,
 /// so its address is the same on every Konstellation network (testnet-1, konstellation-1, local
@@ -12,8 +13,10 @@ import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
 ///
 /// The address depends only on (Create2Deployer address, SALT, WKASH init code). Init code is a
 /// pure function of src/WKASH.sol and foundry.toml's solc / optimizer / evm_version settings
-/// (metadata is stripped, see foundry.toml). test/DeployWKASH.t.sol pins the resulting address;
-/// change any input and that test — and README — must be updated deliberately.
+/// (metadata is stripped, see foundry.toml). Every entry point first checks this build's init
+/// code against the pin in script/lib/InitCodePins.sol and refuses a drifted build;
+/// test/DeployWKASH.t.sol pins the resulting address. Change any input and pin, test and README
+/// must be updated deliberately.
 ///
 /// Usage:
 ///   forge script script/DeployWKASH.s.sol --sig "predict()"                 # print the address
@@ -22,8 +25,9 @@ contract DeployWKASHScript is Script {
     /// @notice Fixed CREATE2 salt. Preimage: the string "konstellation-network/contracts:WKASH:v1".
     bytes32 public constant SALT = keccak256("konstellation-network/contracts:WKASH:v1");
 
-    /// @notice The WKASH creation bytecode this script deploys.
+    /// @notice The WKASH creation bytecode this script deploys. Reverts on a drifted build.
     function initCode() public pure returns (bytes memory) {
+        InitCodePins.requireCanonicalWKASH();
         return type(WKASH).creationCode;
     }
 

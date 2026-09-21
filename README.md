@@ -14,13 +14,14 @@ script/DeployWKASH.s.sol               CREATE2 deploy of WKASH at its fixed addr
 script/DeployVesting.s.sol             CREATE2 deploy of a whole vesting schedule from a JSON config
 script/config/vesting.example.json     the §7 schedule with placeholder addresses
 script/lib/Create2Deployer.sol         preinstalled Create2Deployer: interface, address, address formula
+script/lib/InitCodePins.sol            canonical creation-code hashes; every script entry point refuses a drifted build
 script/VerifyPreinstalls.s.sol         live check: preinstalls/*.json vs what is actually deployed
 test/GenesisBytecode.t.sol             offline check: preinstalls/*.json internal integrity
 test/DeployWKASH.t.sol                 pins the WKASH address (below)
 test/DeployVesting.t.sol               config validation + the vesting deploy against the example config
 test/Create2DeployerPreinstall.t.sol   what the scripts assume about the preinstalled deployer
-test/vesting/InitCodePins.t.sol        pins every CREATE2 creation-code hash (an OZ change moves wallets)
-test/vesting/*.t.sol                   wallet behaviour, revoke paths, §7 year table, fuzz
+test/vesting/InitCodePins.t.sol        pins script/lib/InitCodePins.sol to literals (an OZ change moves wallets)
+test/vesting/*.t.sol                   wallet behaviour, revoke paths, §7 year table, fuzz, stateful invariants
 test/fixtures/vesting.*.json           malformed configs the script must refuse
 CODEOWNERS                             stricter rule for src/vesting/ and preinstalls/
 ```
@@ -29,7 +30,7 @@ CODEOWNERS                             stricter rule for src/vesting/ and preins
 
 ```shell
 forge build
-forge test          # 85 tests incl. 6 fuzz properties at 1000 runs each ([fuzz] in foundry.toml)
+forge test          # 103 tests: unit, 6 fuzz properties x 1000 runs, 4 stateful invariants ([fuzz]/[invariant] in foundry.toml)
 forge fmt --check   # CI runs all three
 ```
 
@@ -70,13 +71,17 @@ produced byte-identical bytecode for every contract here, so no address changed.
 | Salt | `0x8f7bc75b1a2b0d0c1a3bcf6671fe700cea605f21ec5e30f5085debf329795ea5` = `keccak256("konstellation-network/contracts:WKASH:v1")` |
 | Init code hash | `0x0802161d14ce9ad706732c67cb2c77690bd95b8bf26e10353c746b3e3d768e64` (= `keccak256(type(WKASH).creationCode)` at the settings in `foundry.toml`) |
 
-`test/DeployWKASH.t.sol` pins the address; if it fails, something above changed and the pin, this
-table, `chain-config` and `docs` must move together, deliberately. WKASH imports no
-OpenZeppelin code, so `test/vesting/InitCodePins.t.sol` additionally pins the creation-code hash
-of both vesting wallets (`KonstellationVestingWallet`
+`script/lib/InitCodePins.sol` holds the canonical creation-code hash of WKASH and of both
+vesting wallets (`KonstellationVestingWallet`
 `0xb3500e085d7b62e11effa65bee747ae5ea54eedeeef3e97a1ec88368485747e0`, `RevocableVestingWallet`
-`0x58a1dce05f84504570335ee131f82397a6d370932acfe6d8cfd465d4c1b6f59e`): an OZ bump that changes a
-byte moves every wallet address, and that test is what says so. Reproduce independently:
+`0x58a1dce05f84504570335ee131f82397a6d370932acfe6d8cfd465d4c1b6f59e`), and **every script entry
+point checks this build against them first** — `predict()`, `check()`, `run()`, `fund()` and the
+WKASH script all revert with "drifted build" if `FOUNDRY_OPTIMIZER_RUNS`, `--via-ir`, a stray
+`.env` (forge auto-loads one; it is gitignored) or a dependency bump changed a byte, so a
+self-consistent but non-canonical build can never emit an address. `test/DeployWKASH.t.sol` pins
+the WKASH address and `test/vesting/InitCodePins.t.sol` pins the library's constants to
+literals; if either fails, something changed and pin, tests, this table, `chain-config` and
+`docs` must move together, deliberately. Reproduce independently:
 
 ```shell
 forge script script/DeployWKASH.s.sol --sig "predict()"
@@ -154,23 +159,32 @@ as `script/config/vesting.<net>.json` (the address/amount list it yields is what
 `networks/<net>/` consumes). Amounts are whole KASH: the *whole* grant for `team`, which the
 script splits 10 % liquid / 90 % wallet; the *locked* part for `treasury` and `community`.
 Parsing is typed and strict: quoted numbers (`"110000000"`, `"0x68e7780"`) mean the same as
-plain ones, any key outside the schema (`tge`, `revoker`, `treasury`, `grants[]{amountKash,
-beneficiary, kind, label}`, optional `_comment`) is refused, `tge` must be unix seconds in
-2001–2096, and `revoker`, `treasury` and every `beneficiary` must be non-zero — a wallet whose
-constructor would revert must never get a predicted address, because a genesis allocation
-sent there could never be reached by any init code.
+plain ones; any key outside the schema (`tge`, `revoker`, `treasury`, `grants[]{amountKash,
+beneficiary, kind, label}`, optional `_comment`) is refused, and every key must occur exactly
+once in the raw file (forge's parser would silently keep the last of two duplicates); labels
+are `[a-z0-9-]+` and never end in `-liquid`; `tge` must be unix seconds in 2001–2096 and, at
+deploy time, not more than 30 days before the chain's clock; team grants are multiples of 10
+KASH and community buckets of 20 KASH so every wallet holds whole KASH (genesis allocations
+are whole KASH); no beneficiary appears twice; and `revoker`, `treasury` and every
+`beneficiary` must be non-zero, with `revoker`/`treasury` neither a team beneficiary nor a
+planned wallet address. A wallet whose constructor would revert must never get a predicted
+address, because a genesis allocation sent there could never be reached by any init code.
 
 ```shell
 forge script script/DeployVesting.s.sol --sig "check()"       # local dry run: deploys every init code, asserts each address
 forge script script/DeployVesting.s.sol --sig "predict()"     # genesis allocation list (below)
-forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast   # deploy, idempotent
-    # fails unless every wallet holds exactly its amount (genesis funded it); ALLOW_UNFUNDED=true for testnets
-ALLOW_UNFUNDED=true forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast
+forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast   # mainnet deploy, idempotent
+    # a wallet counts as funded by balance + released(); a shortfall reverts, a surplus (dust) only warns
+forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast \
+    --sig "run(string,bool,bool)" script/config/vesting.testnet-1.json true false
+    # testnets: allowShortfall=true (then fund()); allowStaleTge=true only for a dev chain replaying a past tge.
+    # Nothing in the environment relaxes run(): the policy is an explicit argument.
 forge script script/DeployVesting.s.sol --sig "fund()" --rpc-url $RPC --private-key $KEY --broadcast
-    # testnets/dev only: top each wallet up from the broadcaster; refuses a revoked wallet
+    # testnets/dev only: send each wallet its shortfall from the broadcaster; refuses a revoked wallet
 ```
 
-Run `check()` (CI does) before publishing an allocation list.
+Run `check()` (CI does) before publishing an allocation list. Pass `VESTING_CONFIG` on the
+command line, never through `.env`.
 
 `predict()` prints one line per genesis allocation — every wallet with its locked amount, then
 every team member's address with their liquid 10 % — exact to the wei, with the KASH figure
@@ -189,8 +203,9 @@ liquid to team members:    22000000 KASH
 total:                     700000000 KASH
 ```
 
-Salts are `keccak256("konstellation-network/contracts:vesting:v1:" ‖ label)`; labels must be unique.
-A real network's config belongs in `networks/<net>/` once beneficiaries exist.
+Salts are `keccak256("konstellation-network/contracts:vesting:v1:" ‖ label)`; labels are
+`[a-z0-9-]+`, unique, and never end in `-liquid`. A real network's config is checked in here as
+`script/config/vesting.<net>.json`; its `predict()` output is what `networks/<net>/` consumes.
 
 ## Verify preinstalls against their live deployment
 

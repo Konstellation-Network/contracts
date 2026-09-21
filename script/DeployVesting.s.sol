@@ -6,6 +6,7 @@ import {KonstellationVestingWallet} from "../src/vesting/KonstellationVestingWal
 import {RevocableVestingWallet} from "../src/vesting/RevocableVestingWallet.sol";
 import {VestingSchedules} from "../src/vesting/VestingSchedules.sol";
 import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
+import {InitCodePins} from "./lib/InitCodePins.sol";
 
 /// @notice Deploys the TOKENOMICS.md §7 vesting schedule from a JSON config (see
 /// script/config/vesting.example.json) through the preinstalled Create2Deployer, so every
@@ -21,14 +22,23 @@ import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
 /// - `treasury`  → the locked part, one `KonstellationVestingWallet`
 /// - `community` → the locked part, five `KonstellationVestingWallet`s, `<label>-y1` … `-y5`
 ///
-/// The config is parsed field by field with typed accessors and every key is checked against
-/// the schema, so a quoted number, a typo'd key or a missing field is an error, never a silently
-/// wrong amount. `revoker`, `treasury` and every `beneficiary` must be non-zero; a wallet whose
-/// constructor would revert must never reach `predict()`, because a genesis allocation at an
-/// address no init code can ever succeed at is lost. Those addresses must also be EOAs or
-/// contracts that accept plain native transfers and are address-stable for the life of the
-/// grant (a Safe is; a Cosmos `x/auth` multisig and a module account are not) -- the script
-/// cannot check that, so the operator must.
+/// Every entry point first checks this build's wallet creation code against the pins in
+/// script/lib/InitCodePins.sol: a drifted build (other optimizer settings, `--via-ir`, a stray
+/// `.env`, a bumped dependency) is refused before it can emit an address.
+///
+/// The config is parsed field by field with typed accessors and validated: every key is checked
+/// against the schema and must occur exactly once in the raw file (forge's JSON parser keeps
+/// the last of two duplicate keys and reports one), a quoted number means the same as a plain
+/// one, labels are `[a-z0-9-]+` and never end in `-liquid`, `tge` is unix seconds in 2001..2096,
+/// team grants are a multiple of 10 KASH and community buckets of 20 KASH (so every wallet and
+/// liquid amount is a whole KASH, as genesis allocations are), no beneficiary appears twice, and
+/// `revoker` / `treasury` are non-zero, are not a team beneficiary and are not a planned wallet
+/// address (a treasury that is itself a vesting wallet would hand revoked KASH to that wallet's
+/// beneficiary). A wallet whose constructor would revert must never reach `predict()`, because a
+/// genesis allocation at an address no init code can ever succeed at is lost. Those addresses
+/// must also be EOAs or contracts that accept plain native transfers and are address-stable
+/// for the life of the grant (a Safe is; a Cosmos `x/auth` multisig and a module account are
+/// not) -- the script cannot check that, so the operator must.
 ///
 /// `check()` executes every planned init code on a local EVM (the pinned Create2Deployer is
 /// etched if absent) and asserts code at each predicted address with the configured parameters:
@@ -38,16 +48,26 @@ import {Create2DeployerLib, ICreate2Deployer} from "./lib/Create2Deployer.sol";
 /// modelled here.
 ///
 /// Configs live in script/config/ (`fs_permissions` in foundry.toml allows nothing else): a real
-/// network's is `script/config/vesting.<net>.json`, checked in, and `VESTING_CONFIG` selects it.
+/// network's is `script/config/vesting.<net>.json`, checked in, and `VESTING_CONFIG` selects it
+/// (from the command line -- `.env` is gitignored and must not be relied on).
+///
+/// Funding: a wallet has "received" `balance + released()`; `run()` reverts on a shortfall
+/// against the config amount and only warns on a surplus (anyone can send dust to a public
+/// address; extra KASH simply vests to the beneficiary), so a wallet that has already released
+/// is still recognised as funded and `run()` stays idempotent. Nothing in the environment
+/// relaxes that: the testnet path, where genesis did not fund the wallets, is the explicit
+/// `run(string,bool,bool)` overload followed by `fund()`, which sends only the shortfall.
 ///
 /// Usage (VESTING_CONFIG defaults to script/config/vesting.example.json):
 ///   forge script script/DeployVesting.s.sol --sig "check()"                     # local dry run
 ///   forge script script/DeployVesting.s.sol --sig "predict()"                   # allocations
-///   forge script script/DeployVesting.s.sol --rpc-url ... --broadcast           # deploy
-///     # requires every wallet to hold exactly its amount (genesis funded it), unless
-///     # ALLOW_UNFUNDED=true (testnets / dev, before fund())
+///   forge script script/DeployVesting.s.sol --rpc-url ... --broadcast           # mainnet deploy
+///   forge script script/DeployVesting.s.sol --rpc-url ... --broadcast \
+///     --sig "run(string,bool,bool)" script/config/vesting.testnet-1.json true false
+///     # testnets: allowShortfall=true (fund() next); allowStaleTge=true only for a dev chain
+///     # whose tge is deliberately in the past
 ///   forge script script/DeployVesting.s.sol --sig "fund()" --rpc-url ... --broadcast
-///     # testnets only: top each wallet up to its amount from the broadcaster
+///     # testnets only: send each wallet its shortfall from the broadcaster
 contract DeployVestingScript is Script {
     string internal constant DEFAULT_CONFIG = "script/config/vesting.example.json";
     string internal constant SALT_PREFIX = "konstellation-network/contracts:vesting:v1:";
@@ -56,6 +76,12 @@ contract DeployVestingScript is Script {
     /// (milliseconds, a block number) or an overflow, never a launch date.
     uint256 internal constant TGE_MIN = 1_000_000_000;
     uint256 internal constant TGE_MAX = 4_000_000_000;
+    /// @dev A tge more than this far in the past is stale: the schedule would be partly or wholly
+    /// vested the moment the wallets exist.
+    uint256 internal constant TGE_STALE_AFTER = 30 days;
+    /// @dev §7 granularity: a team grant splits 10/90, a community bucket 30/25/20/15/10 %.
+    uint256 internal constant TEAM_GRANULARITY_KASH = 10;
+    uint256 internal constant COMMUNITY_GRANULARITY_KASH = 20;
 
     /// @dev One `grants[]` entry, exactly these keys.
     struct GrantConfig {
@@ -111,6 +137,7 @@ contract DeployVestingScript is Script {
         view
         returns (Header memory h, GrantConfig[] memory grants)
     {
+        InitCodePins.requireCanonicalVesting();
         string memory json = vm.readFile(path);
         _requireKeys(json, "", _headerKeys(), _headerOptionalKeys());
 
@@ -132,6 +159,7 @@ contract DeployVestingScript is Script {
             n++;
         }
         require(n > 0, "config: no grants");
+        _requireKeyCounts(json, n);
         grants = new GrantConfig[](n);
         string[] memory none;
         for (uint256 i = 0; i < n; i++) {
@@ -143,11 +171,116 @@ contract DeployVestingScript is Script {
                 kind: vm.parseJsonString(json, string.concat(g, ".kind")),
                 label: vm.parseJsonString(json, string.concat(g, ".label"))
             });
+            _validateGrant(h, grants[i]);
+            for (uint256 j = 0; j < i; j++) {
+                require(
+                    grants[j].beneficiary != grants[i].beneficiary,
+                    string.concat(
+                        grants[i].label, ": beneficiary already used by ", grants[j].label
+                    )
+                );
+            }
+        }
+    }
+
+    /// @dev Per-grant semantic checks (label charset, amounts, addresses).
+    function _validateGrant(Header memory h, GrantConfig memory g) internal pure {
+        _validateLabel(g.label);
+        require(g.beneficiary != address(0), string.concat(g.label, ": zero beneficiary"));
+        require(g.amountKash > 0, string.concat(g.label, ": zero amount"));
+        if (_isKind(g, "team")) {
             require(
-                grants[i].beneficiary != address(0),
-                string.concat(grants[i].label, ": zero beneficiary")
+                g.amountKash % TEAM_GRANULARITY_KASH == 0,
+                string.concat(g.label, ": team grant must be a multiple of 10 KASH")
             );
-            require(grants[i].amountKash > 0, string.concat(grants[i].label, ": zero amount"));
+            require(
+                g.beneficiary != h.revoker, string.concat(g.label, ": beneficiary is the revoker")
+            );
+            require(
+                g.beneficiary != h.treasury, string.concat(g.label, ": beneficiary is the treasury")
+            );
+        } else if (_isKind(g, "community")) {
+            require(
+                g.amountKash % COMMUNITY_GRANULARITY_KASH == 0,
+                string.concat(g.label, ": community bucket must be a multiple of 20 KASH")
+            );
+        }
+    }
+
+    /// @dev Labels are salt preimages and file/allocation names: non-empty, `[a-z0-9-]` only (no
+    /// unicode confusables, no upper case), and never ending in `-liquid`, which is reserved for
+    /// the generated liquid entries.
+    function _validateLabel(string memory label) internal pure {
+        bytes memory b = bytes(label);
+        require(b.length > 0, "config: empty label");
+        for (uint256 i = 0; i < b.length; i++) {
+            bytes1 c = b[i];
+            bool ok = (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-";
+            require(ok, string.concat(label, ": label must match [a-z0-9-]+"));
+        }
+        require(
+            !_endsWith(label, "-liquid"), string.concat(label, ": label must not end in -liquid")
+        );
+    }
+
+    function _endsWith(string memory s, string memory suffix) internal pure returns (bool) {
+        bytes memory a = bytes(s);
+        bytes memory z = bytes(suffix);
+        if (z.length > a.length) return false;
+        for (uint256 i = 0; i < z.length; i++) {
+            if (a[a.length - z.length + i] != z[i]) return false;
+        }
+        return true;
+    }
+
+    /// @dev Every schema key must occur exactly once per object in the raw file. Forge's JSON
+    /// parser keeps the last of two duplicate keys and `parseJsonKeys` reports one, so a second
+    /// `"amountKash": 1` or a trailing `"tge": ...` would otherwise win silently. Keys are
+    /// counted as `"<key>"` followed by optional whitespace and `:`, not preceded by a backslash;
+    /// labels cannot contain quotes and `_comment` can only contain an escaped `\"`, so no value
+    /// can fake a key.
+    function _requireKeyCounts(string memory json, uint256 grantsCount) internal pure {
+        string[] memory hk = _headerKeys();
+        for (uint256 i = 0; i < hk.length; i++) {
+            uint256 c = _countKey(json, hk[i]);
+            require(c == 1, string.concat("config: key '", hk[i], "' must occur exactly once"));
+        }
+        string[] memory ok = _headerOptionalKeys();
+        for (uint256 i = 0; i < ok.length; i++) {
+            uint256 c = _countKey(json, ok[i]);
+            require(c <= 1, string.concat("config: key '", ok[i], "' must occur at most once"));
+        }
+        string[] memory gk = _grantKeys();
+        for (uint256 i = 0; i < gk.length; i++) {
+            uint256 c = _countKey(json, gk[i]);
+            require(
+                c == grantsCount,
+                string.concat("config: key '", gk[i], "' must occur exactly once per grant")
+            );
+        }
+    }
+
+    /// @dev Occurrences of `"key"` + optional whitespace + `:` in `json`, ignoring ones whose
+    /// opening quote is escaped.
+    function _countKey(string memory json, string memory key) internal pure returns (uint256 n) {
+        bytes memory j = bytes(json);
+        bytes memory pat = bytes(string.concat("\"", key, "\""));
+        if (pat.length > j.length) return 0;
+        for (uint256 i = 0; i + pat.length <= j.length; i++) {
+            if (i > 0 && j[i - 1] == "\\") continue;
+            bool hit = true;
+            for (uint256 k = 0; k < pat.length; k++) {
+                if (j[i + k] != pat[k]) {
+                    hit = false;
+                    break;
+                }
+            }
+            if (!hit) continue;
+            uint256 p = i + pat.length;
+            while (p < j.length && (j[p] == " " || j[p] == "\t" || j[p] == "\n" || j[p] == "\r")) {
+                p++;
+            }
+            if (p < j.length && j[p] == ":") n++;
         }
     }
 
@@ -180,6 +313,10 @@ contract DeployVestingScript is Script {
         }
 
         for (uint256 i = 0; i < wallets.length; i++) {
+            require(
+                wallets[i].addr != h.treasury && wallets[i].addr != h.revoker,
+                string.concat("config: treasury/revoker is the ", wallets[i].label, " wallet")
+            );
             for (uint256 j = i + 1; j < wallets.length; j++) {
                 require(
                     wallets[i].salt != wallets[j].salt,
@@ -241,6 +378,7 @@ contract DeployVestingScript is Script {
         uint256 liquid;
         console.log("config:", path);
         console.log("Create2Deployer:", Create2DeployerLib.addr(vm));
+        _warnIfStale(path, vm.unixTime() / 1000);
         for (uint256 i = 0; i < list.length; i++) {
             Allocation memory a = list[i];
             string memory kind = "liquid";
@@ -307,15 +445,28 @@ contract DeployVestingScript is Script {
     /// (genesis funded it) unless `ALLOW_UNFUNDED=true` (testnets / dev, before `fund()`).
     /// Idempotent.
     function run() external returns (Wallet[] memory wallets) {
-        return run(configPath(), vm.envOr("ALLOW_UNFUNDED", false));
+        return run(configPath(), false, false);
     }
 
-    /// @notice `run()` for an explicit config path and funding policy.
-    function run(string memory path, bool allowUnfunded) public returns (Wallet[] memory wallets) {
+    /// @notice `run()` for an explicit config path and policy. `allowShortfall` turns a funding
+    /// shortfall into a warning (testnets, before `fund()`); `allowStaleTge` accepts a `tge`
+    /// more than 30 days before the chain's clock (a dev chain replaying a past schedule).
+    /// Neither is read from the environment.
+    function run(string memory path, bool allowShortfall, bool allowStaleTge)
+        public
+        returns (Wallet[] memory wallets)
+    {
         address deployer = Create2DeployerLib.addr(vm);
         require(deployer.code.length > 0, "DeployVesting: Create2Deployer is not preinstalled here");
         wallets = plan(path);
         (Header memory h,) = readConfig(path);
+        // A stale tge only matters for wallets that do not exist yet: re-running later, over
+        // an already deployed schedule, must stay idempotent.
+        bool anyToDeploy;
+        for (uint256 i = 0; i < wallets.length; i++) {
+            if (wallets[i].addr.code.length == 0) anyToDeploy = true;
+        }
+        if (anyToDeploy) _requireFreshTge(h, allowStaleTge);
 
         vm.startBroadcast();
         for (uint256 i = 0; i < wallets.length; i++) {
@@ -332,19 +483,27 @@ contract DeployVestingScript is Script {
         for (uint256 i = 0; i < wallets.length; i++) {
             Wallet memory x = wallets[i];
             _verifyWallet(h, x);
-            uint256 bal = x.addr.balance;
-            if (bal == x.amount) continue;
+            uint256 received = _received(x.addr);
+            if (received == x.amount) continue;
             string memory msg_ = string.concat(
                 x.label,
-                " holds ",
-                formatKash(bal),
-                " KASH, config says ",
-                formatKash(x.amount),
-                " (genesis allocation missing or wrong? ALLOW_UNFUNDED=true + fund() on testnets)"
+                " received ",
+                formatKash(received),
+                " KASH (balance + released), config says ",
+                formatKash(x.amount)
             );
-            require(allowUnfunded, msg_);
-            console.log("WARNING", msg_);
+            if (received > x.amount) {
+                console.log("WARNING surplus:", msg_);
+                continue;
+            }
+            require(allowShortfall, string.concat("shortfall: ", msg_));
+            console.log("WARNING shortfall:", msg_);
         }
+    }
+
+    /// @notice What a wallet has been given so far: its balance plus what it already released.
+    function _received(address wallet) internal view returns (uint256) {
+        return wallet.balance + KonstellationVestingWallet(payable(wallet)).released();
     }
 
     /// @notice Sends each wallet the difference between its config amount and its balance,
@@ -369,18 +528,52 @@ contract DeployVestingScript is Script {
                     string.concat(x.label, ": revoked, refusing to fund")
                 );
             }
-            uint256 bal = x.addr.balance;
-            if (bal >= x.amount) continue;
-            (bool ok,) = x.addr.call{value: x.amount - bal}("");
+            uint256 received = _received(x.addr);
+            if (received >= x.amount) continue;
+            (bool ok,) = x.addr.call{value: x.amount - received}("");
             require(ok, string.concat(x.label, ": funding transfer failed"));
             console.log(
-                string.concat("funded   ", x.label, " ", formatKash(x.amount - bal), " KASH")
+                string.concat("funded   ", x.label, " ", formatKash(x.amount - received), " KASH")
             );
         }
         vm.stopBroadcast();
     }
 
     // --- internals ------------------------------------------------------------------------------
+
+    /// @dev On-chain time: a tge more than TGE_STALE_AFTER before `block.timestamp` is refused
+    /// unless explicitly allowed.
+    function _requireFreshTge(Header memory h, bool allowStale) internal view {
+        // Off-chain script logic with a 30-day tolerance: validator drift is irrelevant here.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp > uint256(h.tge) + TGE_STALE_AFTER) {
+            string memory msg_ = string.concat(
+                "config: tge ",
+                vm.toString(h.tge),
+                " is more than 30 days before the chain's clock ",
+                vm.toString(block.timestamp),
+                " -- the schedule would start already vested"
+            );
+            require(allowStale, msg_);
+            console.log("WARNING", msg_);
+        }
+    }
+
+    /// @dev Offline entry points only have the wall clock; say so, do not refuse.
+    function _warnIfStale(string memory path, uint256 nowSeconds) internal view {
+        (Header memory h,) = readConfig(path);
+        if (nowSeconds > uint256(h.tge) + TGE_STALE_AFTER) {
+            console.log(
+                string.concat(
+                    "WARNING tge ",
+                    vm.toString(h.tge),
+                    " is more than 30 days in the past (wall clock ",
+                    vm.toString(nowSeconds),
+                    "); run() will refuse it unless allowStaleTge"
+                )
+            );
+        }
+    }
 
     function _team(Header memory h, GrantConfig memory g) internal pure returns (Wallet memory) {
         (uint64 start, uint64 cliff, uint64 duration) = VestingSchedules.team(h.tge);

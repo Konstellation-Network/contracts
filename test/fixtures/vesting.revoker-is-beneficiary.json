@@ -1,7 +1,7 @@
 {
-  "_comment": "Example TOKENOMICS.md \u00a77 schedule for script/DeployVesting.s.sol. Amounts are whole KASH. team: the WHOLE grant -- the script pays 10 % liquid to the beneficiary in genesis and puts 90 % in a RevocableVestingWallet (revoker/treasury below). treasury | community: the LOCKED part only (the 50 M liquid treasury tranche and the 50 M community-pool seed never enter a wallet; the seed is genesis distribution state). community fans out into five yearly tranche wallets (30/25/20/15/10 %). Addresses are placeholders; a real network's config is checked in here as script/config/vesting.<net>.json once beneficiaries exist (the script can read nothing outside script/config/), and its predict() output is what networks/<net>/ allocations consume.",
+  "_comment": "Example TOKENOMICS.md §7 schedule for script/DeployVesting.s.sol. Amounts are whole KASH. team: the WHOLE grant -- the script pays 10 % liquid to the beneficiary in genesis and puts 90 % in a RevocableVestingWallet (revoker/treasury below). treasury | community: the LOCKED part only (the 50 M liquid treasury tranche and the 50 M community-pool seed never enter a wallet; the seed is genesis distribution state). community fans out into five yearly tranche wallets (30/25/20/15/10 %). Addresses are placeholders; a real network's config lives in networks/<net>/ once beneficiaries exist.",
   "tge": 1800000000,
-  "revoker": "0x1000000000000000000000000000000000000001",
+  "revoker": "0x2000000000000000000000000000000000000001",
   "treasury": "0x1000000000000000000000000000000000000002",
   "grants": [
     {

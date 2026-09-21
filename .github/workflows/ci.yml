@@ -12,11 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      # Actions are SHA-pinned (a moved tag cannot change what runs); the comment is the tag.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # lib/forge-std and lib/openzeppelin-contracts (pinned in foundry.lock)
           submodules: recursive
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.3
       - name: Format check
         run: forge fmt --check
       - name: Build
@@ -24,15 +27,17 @@ jobs:
       - name: Test
         # Everything under test/: preinstall integrity (offline self-consistency only -- run
         # script/VerifyPreinstalls.s.sol by hand against a real RPC whenever preinstalls/*.json
-        # changes), the pinned WKASH CREATE2 address, the vesting wallets (unit + fuzz, 1000
-        # runs per property per foundry.toml [fuzz]) and the vesting deploy script against the
-        # example config.
+        # changes), the pinned WKASH CREATE2 address and creation-code hashes, the vesting
+        # wallets (unit, fuzz at 1000 runs, stateful invariants), the config validator and the
+        # vesting deploy script against the example config and the malformed fixtures.
         run: forge test -vvv
       - name: Vesting schedule dry run
         # Executes every init code of the example config on a local EVM through the pinned
         # Create2Deployer and asserts each wallet lands at its predicted address with its
         # configured parameters -- the guarantee an allocation list needs before it is
-        # published. Run it against script/config/vesting.<net>.json for a real network.
+        # published. Run it against script/config/vesting.<net>.json for a real network. Every
+        # script entry point refuses a build whose creation code drifted from
+        # script/lib/InitCodePins.sol, so this also proves CI compiles the canonical bytecode.
         run: forge script script/DeployVesting.s.sol --sig "check()"
       - name: Predicted addresses
         # Printed on every run so a reviewer can compare against README without a checkout.

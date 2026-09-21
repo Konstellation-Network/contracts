@@ -38,3 +38,8 @@ line_length = 100
 tab_width = 4
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[invariant]
+runs = 64
+depth = 64
+fail_on_revert = false
