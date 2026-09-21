@@ -28,6 +28,12 @@ jobs:
         # runs per property per foundry.toml [fuzz]) and the vesting deploy script against the
         # example config.
         run: forge test -vvv
+      - name: Vesting schedule dry run
+        # Executes every init code of the example config on a local EVM through the pinned
+        # Create2Deployer and asserts each wallet lands at its predicted address with its
+        # configured parameters -- the guarantee an allocation list needs before it is
+        # published. Run it against script/config/vesting.<net>.json for a real network.
+        run: forge script script/DeployVesting.s.sol --sig "check()"
       - name: Predicted addresses
         # Printed on every run so a reviewer can compare against README without a checkout.
         run: |

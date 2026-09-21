@@ -24,6 +24,8 @@ contract DeployVestingTest is Test {
     function setUp() public {
         vm.etch(Create2DeployerLib.addr(vm), Create2DeployerLib.code(vm));
         script = new DeployVestingScript();
+        // Env vars are process-wide and tests run in parallel, so every test here uses the
+        // explicit-path entry points; only test_EnvVarsSelectConfigAndFundingPolicy reads env.
     }
 
     function test_PlanExpandsExampleConfig() public view {
@@ -94,7 +96,7 @@ contract DeployVestingTest is Test {
 
     function test_RunDeploysTheScheduleAtPredictedAddresses() public {
         DeployVestingScript.Wallet[] memory planned = script.plan(CONFIG);
-        DeployVestingScript.Wallet[] memory deployed = script.run();
+        DeployVestingScript.Wallet[] memory deployed = script.run(CONFIG, true);
         assertEq(deployed.length, planned.length);
 
         for (uint256 i = 0; i < planned.length; i++) {
@@ -150,7 +152,7 @@ contract DeployVestingTest is Test {
         }
 
         // Idempotent: a second run deploys nothing and returns the same plan.
-        DeployVestingScript.Wallet[] memory again = script.run();
+        DeployVestingScript.Wallet[] memory again = script.run(CONFIG, true);
         assertEq(again[0].addr, planned[0].addr);
     }
 
@@ -161,7 +163,7 @@ contract DeployVestingTest is Test {
         for (uint256 i = 0; i < planned.length; i++) {
             vm.deal(planned[i].addr, planned[i].amount);
         }
-        script.run();
+        script.run(CONFIG, false); // fully funded: strict mode passes
 
         for (uint256 i = 0; i < planned.length; i++) {
             assertEq(planned[i].addr.balance, planned[i].amount, planned[i].label);
@@ -183,12 +185,12 @@ contract DeployVestingTest is Test {
 
     /// @dev Testnet path: nothing in genesis, `fund()` tops every wallet up from the broadcaster.
     function test_FundTopsUpToConfiguredAmounts() public {
-        DeployVestingScript.Wallet[] memory planned = script.run();
+        DeployVestingScript.Wallet[] memory planned = script.run(CONFIG, true);
         vm.deal(address(script), 678_000_000 ether);
         // One wallet already partly funded: only the shortfall is sent.
         vm.deal(planned[0].addr, 1 ether);
 
-        script.fund();
+        script.fund(CONFIG);
 
         // Exactly the configured amount everywhere: the pre-funded wallet got the shortfall,
         // not the full amount on top.
@@ -197,7 +199,7 @@ contract DeployVestingTest is Test {
         }
 
         // Nothing more to send on a second pass.
-        script.fund();
+        script.fund(CONFIG);
         for (uint256 i = 0; i < planned.length; i++) {
             assertEq(planned[i].addr.balance, planned[i].amount, planned[i].label);
         }
@@ -216,6 +218,181 @@ contract DeployVestingTest is Test {
     function test_RevertWhen_Create2DeployerMissing() public {
         vm.etch(Create2DeployerLib.addr(vm), "");
         vm.expectRevert(bytes("DeployVesting: Create2Deployer is not preinstalled here"));
+        script.run(CONFIG, true);
+    }
+
+    // --- review round (PR #2): config validation ------------------------------------------------
+
+    /// @dev H1: a zero revoker/treasury would give addresses whose init code can never succeed
+    /// (the constructor reverts), so genesis funds sent there would be lost. Rejected up front.
+    function test_RevertWhen_ZeroRevoker() public {
+        vm.expectRevert(bytes("config: zero revoker"));
+        script.plan("test/fixtures/vesting.zero-revoker.json");
+    }
+
+    function test_RevertWhen_ZeroTreasury() public {
+        vm.expectRevert(bytes("config: zero treasury"));
+        script.plan("test/fixtures/vesting.zero-treasury.json");
+    }
+
+    /// @dev M3: quoted decimal and quoted hex amounts parse to the same value as a plain number
+    /// (the old struct decode read a string's ABI head word, 128, instead).
+    function test_QuotedAmountsParseExactly() public view {
+        DeployVestingScript.Wallet[] memory plain = script.plan(CONFIG);
+        DeployVestingScript.Wallet[] memory quoted =
+            script.plan("test/fixtures/vesting.string-amount.json");
+        DeployVestingScript.Wallet[] memory hex_ =
+            script.plan("test/fixtures/vesting.hex-amount.json");
+        assertEq(quoted.length, plain.length);
+        for (uint256 i = 0; i < plain.length; i++) {
+            assertEq(quoted[i].amount, plain[i].amount, plain[i].label);
+            assertEq(hex_[i].amount, plain[i].amount, plain[i].label);
+            assertEq(quoted[i].addr, plain[i].addr, plain[i].label);
+            assertEq(hex_[i].addr, plain[i].addr, plain[i].label);
+        }
+        assertEq(quoted[11].amount, 99_000_000 ether, "not 128 KASH x 0.9");
+    }
+
+    /// @dev M3: keys outside the schema are refused wherever they sort.
+    function test_RevertWhen_UnknownGrantKey() public {
+        vm.expectRevert(bytes(".grants[3]: unknown key 'note'"));
+        script.plan("test/fixtures/vesting.extra-key.json");
+        vm.expectRevert(bytes(".grants[3]: unknown key 'aaa'"));
+        script.plan("test/fixtures/vesting.leading-key.json");
+    }
+
+    function test_RevertWhen_MissingHeaderKey() public {
+        vm.expectRevert(bytes("config: missing key 'revoker'"));
+        script.plan("test/fixtures/vesting.missing-key.json");
+    }
+
+    /// @dev L2: tge is range-checked before the uint64 cast.
+    function test_RevertWhen_TgeOutOfRange() public {
+        vm.expectRevert(bytes("config: tge out of range (unix seconds)"));
+        script.plan("test/fixtures/vesting.tge-overflow.json");
+    }
+
+    /// @dev A team label that collides with a generated community tranche label is a duplicate.
+    function test_RevertWhen_CrossKindDuplicateLabel() public {
+        vm.expectRevert(bytes("duplicate label: community-grants-y1"));
+        script.plan("test/fixtures/vesting.crosskind.json");
+    }
+
+    /// @dev M2 + M4: VESTING_CONFIG selects the config (inside script/config or test/fixtures,
+    /// the only paths fs_permissions allows) and ALLOW_UNFUNDED relaxes run(). The only test
+    /// that touches env, and the only one calling the env-reading entry points.
+    function test_EnvVarsSelectConfigAndFundingPolicy() public {
+        assertEq(script.configPath(), CONFIG, "default");
+        vm.setEnv("VESTING_CONFIG", "test/fixtures/vesting.fractional.json");
+        assertEq(script.configPath(), "test/fixtures/vesting.fractional.json");
+        DeployVestingScript.Allocation[] memory a = script.predict();
+        assertEq(a[1].label, "community-grants-y1");
+        assertEq(a[1].amount, 54_000_000.3 ether);
+
+        // run() unfunded: refused by default, allowed with ALLOW_UNFUNDED=true.
+        vm.expectRevert();
         script.run();
+        vm.setEnv("ALLOW_UNFUNDED", "true");
+        DeployVestingScript.Wallet[] memory w = script.run();
+        assertEq(w[1].amount, 54_000_000.3 ether);
+        assertGt(w[1].addr.code.length, 0);
+    }
+
+    /// @dev M4: fractional amounts are carried and printed exactly (esp, and KASH with digits).
+    function test_FractionalAmountsAreExact() public view {
+        DeployVestingScript.Allocation[] memory a =
+            script.allocations("test/fixtures/vesting.fractional.json");
+        // community-grants 180 000 001 KASH: tranche 1 = 30 % = 54 000 000.3 KASH
+        assertEq(a[1].amount, 54_000_000.3 ether);
+        assertEq(script.formatKash(a[1].amount), "54000000.3");
+        // team 12 345 679 KASH: 90 % = 11 111 111.1 locked, 10 % = 1 234 567.9 liquid
+        assertEq(a[11].label, "team-founder-1");
+        assertEq(a[11].amount, 11_111_111.1 ether);
+        assertEq(script.formatKash(a[11].amount), "11111111.1");
+        assertEq(a[13].label, "team-founder-1-liquid");
+        assertEq(a[13].amount, 1_234_567.9 ether);
+        assertEq(script.formatKash(a[13].amount), "1234567.9");
+        // and the five tranches still sum exactly to the locked amount
+        uint256 sum;
+        for (uint256 k = 1; k <= 5; k++) {
+            sum += a[k].amount;
+        }
+        assertEq(sum, 180_000_001 ether);
+    }
+
+    function test_FormatKash() public view {
+        assertEq(script.formatKash(0), "0");
+        assertEq(script.formatKash(1), "0.000000000000000001");
+        assertEq(script.formatKash(1 ether), "1");
+        assertEq(script.formatKash(1.5 ether), "1.5");
+        assertEq(script.formatKash(200_000_000 ether), "200000000");
+        assertEq(script.formatKash(123.000000000000000456 ether), "123.000000000000000456");
+    }
+
+    // --- review round (PR #2): check(), strict run(), fund() on a revoked wallet ---------------
+
+    /// @dev H1: check() executes every init code locally and proves each predicted address.
+    function test_CheckDeploysEveryWalletLocally() public {
+        DeployVestingScript.Wallet[] memory planned = script.plan(CONFIG);
+        for (uint256 i = 0; i < planned.length; i++) {
+            assertEq(planned[i].addr.code.length, 0);
+        }
+        DeployVestingScript.Wallet[] memory checked = script.check(CONFIG);
+        assertEq(checked.length, planned.length);
+        for (uint256 i = 0; i < planned.length; i++) {
+            assertEq(checked[i].addr, planned[i].addr);
+            assertGt(planned[i].addr.code.length, 0, planned[i].label);
+        }
+        // A second check() on the same EVM finds the code already there.
+        vm.expectRevert(bytes("treasury-locked: address already has code"));
+        script.check(CONFIG);
+    }
+
+    function test_CheckEtchesTheDeployerWhenAbsent() public {
+        vm.etch(Create2DeployerLib.addr(vm), "");
+        DeployVestingScript.Wallet[] memory checked = script.check(CONFIG);
+        assertGt(checked[0].addr.code.length, 0);
+    }
+
+    /// @dev M4: run() refuses to finish with a wallet that does not hold exactly its amount.
+    function test_RunRequiresExactFundingByDefault() public {
+        DeployVestingScript.Wallet[] memory planned = script.plan(CONFIG);
+        for (uint256 i = 0; i < planned.length; i++) {
+            vm.deal(planned[i].addr, planned[i].amount);
+        }
+        vm.deal(planned[0].addr, planned[0].amount - 1); // one wei short
+        vm.expectRevert(
+            bytes(
+                "treasury-locked holds 199999999.999999999999999999 KASH, config says 200000000 (genesis allocation missing or wrong? ALLOW_UNFUNDED=true + fund() on testnets)"
+            )
+        );
+        script.run(CONFIG, false);
+
+        vm.deal(planned[0].addr, planned[0].amount);
+        script.run(CONFIG, false); // exact everywhere: fine
+    }
+
+    /// @dev fund() must not top up a revoked wallet: everything it holds after a revoke belongs
+    /// to the beneficiary, so a top-up would hand them what the treasury took back.
+    function test_RevertWhen_FundingARevokedWallet() public {
+        DeployVestingScript.Wallet[] memory planned = script.run(CONFIG, true);
+        vm.deal(address(script), 678_000_000 ether);
+        script.fund(CONFIG);
+
+        RevocableVestingWallet team = RevocableVestingWallet(payable(planned[11].addr));
+        vm.warp(TGE + 2 * YEAR);
+        vm.prank(REVOKER);
+        team.revoke();
+        uint256 after_ = planned[11].addr.balance;
+        assertLt(after_, planned[11].amount);
+
+        vm.expectRevert(bytes("team-founder-1: revoked, refusing to fund"));
+        script.fund(CONFIG);
+        assertEq(planned[11].addr.balance, after_);
+    }
+
+    function test_RevertWhen_FundingBeforeDeploy() public {
+        vm.expectRevert(bytes("treasury-locked: not deployed, run() first"));
+        script.fund(CONFIG);
     }
 }

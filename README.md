@@ -17,8 +17,11 @@ script/lib/Create2Deployer.sol         preinstalled Create2Deployer: interface, 
 script/VerifyPreinstalls.s.sol         live check: preinstalls/*.json vs what is actually deployed
 test/GenesisBytecode.t.sol             offline check: preinstalls/*.json internal integrity
 test/DeployWKASH.t.sol                 pins the WKASH address (below)
-test/DeployVesting.t.sol               runs the vesting deploy against the example config
+test/DeployVesting.t.sol               config validation + the vesting deploy against the example config
+test/Create2DeployerPreinstall.t.sol   what the scripts assume about the preinstalled deployer
+test/vesting/InitCodePins.t.sol        pins every CREATE2 creation-code hash (an OZ change moves wallets)
 test/vesting/*.t.sol                   wallet behaviour, revoke paths, §7 year table, fuzz
+test/fixtures/vesting.*.json           malformed configs the script must refuse
 CODEOWNERS                             stricter rule for src/vesting/ and preinstalls/
 ```
 
@@ -26,7 +29,7 @@ CODEOWNERS                             stricter rule for src/vesting/ and preins
 
 ```shell
 forge build
-forge test          # 59 tests incl. 6 fuzz properties at 1000 runs each ([fuzz] in foundry.toml)
+forge test          # 85 tests incl. 6 fuzz properties at 1000 runs each ([fuzz] in foundry.toml)
 forge fmt --check   # CI runs all three
 ```
 
@@ -68,7 +71,12 @@ produced byte-identical bytecode for every contract here, so no address changed.
 | Init code hash | `0x0802161d14ce9ad706732c67cb2c77690bd95b8bf26e10353c746b3e3d768e64` (= `keccak256(type(WKASH).creationCode)` at the settings in `foundry.toml`) |
 
 `test/DeployWKASH.t.sol` pins the address; if it fails, something above changed and the pin, this
-table, `chain-config` and `docs` must move together, deliberately. Reproduce independently:
+table, `chain-config` and `docs` must move together, deliberately. WKASH imports no
+OpenZeppelin code, so `test/vesting/InitCodePins.t.sol` additionally pins the creation-code hash
+of both vesting wallets (`KonstellationVestingWallet`
+`0xb3500e085d7b62e11effa65bee747ae5ea54eedeeef3e97a1ec88368485747e0`, `RevocableVestingWallet`
+`0x58a1dce05f84504570335ee131f82397a6d370932acfe6d8cfd465d4c1b6f59e`): an OZ bump that changes a
+byte moves every wallet address, and that test is what says so. Reproduce independently:
 
 ```shell
 forge script script/DeployWKASH.s.sol --sig "predict()"
@@ -96,10 +104,23 @@ contracts on OpenZeppelin's `VestingWallet` + `VestingWalletCliff`:
   to the beneficiary; the unvested remainder goes to the immutable `treasury` in the same call.
   Team grants.
 
-Deviations from stock OpenZeppelin, both deliberate (NatSpec has the detail): **ERC-20 release
+Deviations from stock OpenZeppelin, all deliberate (NatSpec has the detail): **ERC-20 release
 is disabled** — cosmos/evm's `werc20` precompile presents the native balance as an ERC-20, so OZ's
-`release(token)` path would let a beneficiary withdraw the same KASH twice; and
-`renounceOwnership` reverts (it would route releases to `address(0)`).
+`release(token)` path would let a beneficiary withdraw the same KASH twice; `renounceOwnership`
+reverts (it would route releases to `address(0)`); and **ownership transfer is two-step**
+(`Ownable2Step`: the new beneficiary must `acceptOwnership()`) and refuses the wallet's own
+address, so a grant cannot be sent to a typo or into itself (which would corrupt the accounting).
+
+**Address constraints, checked by nobody but the operator.** Every `beneficiary` must be an EOA
+or a contract that accepts plain native transfers (a Safe does); anything else — a contract
+with no payable receive path, or a Cosmos *module account*, which the chain's balance guard
+(`ENGINEERING.md §4.1.1`) refuses EVM value into — makes `release()` revert forever, and since
+only the owner can move ownership the grant is unrecoverable. `revoker` and `treasury` are
+immutable for the grant's whole life, so they must be **address-stable**: an EOA or a contract
+multisig whose address survives signer rotation (a Safe). A Cosmos `x/auth` multisig is *not*
+address-stable (its address derives from the member pubkeys and threshold, so any membership
+change is a new address) and must not be used. `treasury` must also accept plain native
+transfers, else `revoke()` reverts.
 
 A wallet's total is whatever it has ever held, so it can be funded **in genesis** (allocation to
 the CREATE2 address before the code exists — nothing can move it until the deterministic code
@@ -126,29 +147,46 @@ team 22 M.
 
 ### Deploying a schedule
 
-`script/DeployVesting.s.sol` reads a JSON config (`VESTING_CONFIG`, default
-`script/config/vesting.example.json`; amounts in whole KASH — the *whole* grant for `team`, which
-the script splits 10 % liquid / 90 % wallet; the *locked* part for `treasury` and `community`):
+`script/DeployVesting.s.sol` reads a JSON config selected by `VESTING_CONFIG` (default
+`script/config/vesting.example.json`). **Configs live in `script/config/`** — `fs_permissions`
+in `foundry.toml` lets the script read nothing else — so a real network's config is checked in
+as `script/config/vesting.<net>.json` (the address/amount list it yields is what
+`networks/<net>/` consumes). Amounts are whole KASH: the *whole* grant for `team`, which the
+script splits 10 % liquid / 90 % wallet; the *locked* part for `treasury` and `community`.
+Parsing is typed and strict: quoted numbers (`"110000000"`, `"0x68e7780"`) mean the same as
+plain ones, any key outside the schema (`tge`, `revoker`, `treasury`, `grants[]{amountKash,
+beneficiary, kind, label}`, optional `_comment`) is refused, `tge` must be unix seconds in
+2001–2096, and `revoker`, `treasury` and every `beneficiary` must be non-zero — a wallet whose
+constructor would revert must never get a predicted address, because a genesis allocation
+sent there could never be reached by any init code.
 
 ```shell
+forge script script/DeployVesting.s.sol --sig "check()"       # local dry run: deploys every init code, asserts each address
 forge script script/DeployVesting.s.sol --sig "predict()"     # genesis allocation list (below)
 forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast   # deploy, idempotent
+    # fails unless every wallet holds exactly its amount (genesis funded it); ALLOW_UNFUNDED=true for testnets
+ALLOW_UNFUNDED=true forge script script/DeployVesting.s.sol --rpc-url $RPC --private-key $KEY --broadcast
 forge script script/DeployVesting.s.sol --sig "fund()" --rpc-url $RPC --private-key $KEY --broadcast
-    # testnets/dev only: top each wallet up from the broadcaster; on mainnet genesis pre-funds them
+    # testnets/dev only: top each wallet up from the broadcaster; refuses a revoked wallet
 ```
+
+Run `check()` (CI does) before publishing an allocation list.
 
 `predict()` prints one line per genesis allocation — every wallet with its locked amount, then
-every team member's address with their liquid 10 % — and the totals:
+every team member's address with their liquid 10 % — exact to the wei, with the KASH figure
+showing every fractional digit (a 180 000 001 KASH community bucket yields a 54 000 000.3 KASH
+tranche; genesis allocations are whole KASH, so pick amounts divisible by 20 for community and
+10 for team, or fund the remainder):
 
 ```
-treasury-locked          0x1794fa…b433  200000000  wallet non-revocable
-community-grants-y1      0x1EDA07…E3dd   54000000  wallet non-revocable
+treasury-locked        0x7E160C…e103  200000000000000000000000000 esp (200000000 KASH) wallet non-revocable
+community-grants-y1    0x7773E5…825D   54000000000000000000000000 esp (54000000 KASH) wallet non-revocable
 …
-team-founder-1           0x9989F0…04f3   99000000  wallet revocable
-team-founder-1-liquid    0x200000…0001   11000000  liquid
-locked in vesting wallets (KASH): 678000000
-liquid to team members (KASH):    22000000
-total (KASH):                     700000000
+team-founder-1         0xCb17B6…8b58   99000000000000000000000000 esp (99000000 KASH) wallet revocable
+team-founder-1-liquid  0x200000…0001     11000000000000000000000000 esp (11000000 KASH) liquid
+locked in vesting wallets: 678000000 KASH
+liquid to team members:    22000000 KASH
+total:                     700000000 KASH
 ```
 
 Salts are `keccak256("konstellation-network/contracts:vesting:v1:" ‖ label)`; labels must be unique.
