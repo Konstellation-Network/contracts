@@ -4,16 +4,42 @@ out = "out"
 libs = ["lib"]
 script = "script"
 test = "test"
-solc = "0.8.28"
-evm_version = "cancun"
+solc = "0.8.37"
+# Konstellation runs the Prague fork (cosmos/evm v0.7.3 default: PragueTime = 0). Osaka is
+# deliberately NOT enabled on the chain -- its EIP-7951 P256VERIFY precompile at 0x100 collides
+# with cosmos/evm's own p256 precompile at that address, untested upstream -- so "osaka" here
+# would emit CLZ (EIP-7939), an invalid opcode on our chain. Do not raise this above prague
+# without the chain having activated the fork first.
+evm_version = "prague"
 optimizer = true
 optimizer_runs = 200
-# GenesisBytecode.t.sol and VerifyPreinstalls.s.sol read the pinned bytecode
-# straight from preinstalls/*.json.
-fs_permissions = [{ access = "read", path = "./preinstalls" }]
+# No CBOR metadata / IPFS hash appended to bytecode. WKASH and the vesting wallets are deployed
+# through the preinstalled Create2Deployer at addresses that are a function of their init code
+# (README "Deterministic addresses"), and those addresses are consumed by chain-config, docs and
+# genesis allocations. With metadata on, editing a comment would move every address; with it
+# off, only a change to the compiled code (or to solc / optimizer / evm_version above) does --
+# and test/DeployWKASH.t.sol pins the WKASH address so that change fails CI instead of drifting.
+bytecode_hash = "none"
+cbor_metadata = false
+# GenesisBytecode.t.sol and VerifyPreinstalls.s.sol read the pinned bytecode straight from
+# preinstalls/*.json; DeployVesting.s.sol reads its schedule config from script/config/ (and its tests
+# from test/fixtures/).
+fs_permissions = [
+    { access = "read", path = "./preinstalls" },
+    { access = "read", path = "./script/config" },
+    { access = "read", path = "./test/fixtures" },
+]
+
+[fuzz]
+runs = 1000
 
 [fmt]
 line_length = 100
 tab_width = 4
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[invariant]
+runs = 64
+depth = 64
+fail_on_revert = false

@@ -1,0 +1,38 @@
+{
+  "_comment": "Example TOKENOMICS.md §7 schedule for script/DeployVesting.s.sol. Amounts are whole KASH. team: the WHOLE grant -- the script pays 10 % liquid to the beneficiary in genesis and puts 90 % in a RevocableVestingWallet (revoker/treasury below). treasury | community: the LOCKED part only (the 50 M liquid treasury tranche and the 50 M community-pool seed never enter a wallet; the seed is genesis distribution state). community fans out into five yearly tranche wallets (30/25/20/15/10 %). Addresses are placeholders; a real network's config lives in networks/<net>/ once beneficiaries exist.",
+  "tge": 1000000000,
+  "revoker": "0x1000000000000000000000000000000000000001",
+  "treasury": "0x1000000000000000000000000000000000000002",
+  "grants": [
+    {
+      "amountKash": 200000000,
+      "beneficiary": "0x1000000000000000000000000000000000000002",
+      "kind": "treasury",
+      "label": "treasury-locked"
+    },
+    {
+      "amountKash": 180000000,
+      "beneficiary": "0x1000000000000000000000000000000000000003",
+      "kind": "community",
+      "label": "community-grants"
+    },
+    {
+      "amountKash": 100000000,
+      "beneficiary": "0x1000000000000000000000000000000000000004",
+      "kind": "community",
+      "label": "community-incentives"
+    },
+    {
+      "amountKash": 110000000,
+      "beneficiary": "0x2000000000000000000000000000000000000001",
+      "kind": "team",
+      "label": "team-founder-1"
+    },
+    {
+      "amountKash": 110000000,
+      "beneficiary": "0x2000000000000000000000000000000000000002",
+      "kind": "team",
+      "label": "team-founder-2"
+    }
+  ]
+}

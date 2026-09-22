@@ -4,3 +4,11 @@ node_modules/
 # Foundry build artifacts
 cache/
 out/
+
+# forge script --broadcast records (dev-chain runs, signed with public dev keys)
+broadcast/
+
+# forge auto-loads a project-root .env; a committed one could silently change VESTING_CONFIG
+# or compiler settings (README "Deterministic addresses").
+.env
+.env.*

@@ -1,0 +1,38 @@
+{
+  "_comment": "a comment mentioning \"tge\": 5 in quotes",
+  "tge": 1800000000,
+  "revoker": "0x1000000000000000000000000000000000000001",
+  "treasury": "0x1000000000000000000000000000000000000002",
+  "grants": [
+    {
+      "amountKash": 200000000,
+      "beneficiary": "0x1000000000000000000000000000000000000002",
+      "kind": "treasury",
+      "label": "treasury-locked"
+    },
+    {
+      "amountKash": 180000000,
+      "beneficiary": "0x1000000000000000000000000000000000000003",
+      "kind": "community",
+      "label": "community-grants"
+    },
+    {
+      "amountKash": 100000000,
+      "beneficiary": "0x1000000000000000000000000000000000000004",
+      "kind": "community",
+      "label": "community-incentives"
+    },
+    {
+      "amountKash": 110000000,
+      "beneficiary": "0x2000000000000000000000000000000000000001",
+      "kind": "team",
+      "label": "team-founder-1"
+    },
+    {
+      "amountKash": 110000000,
+      "beneficiary": "0x2000000000000000000000000000000000000002",
+      "kind": "team",
+      "label": "team-founder-2"
+    }
+  ]
+}
