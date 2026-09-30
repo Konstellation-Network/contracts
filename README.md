@@ -212,3 +212,7 @@ Salts are `keccak256("konstellation-network/contracts:vesting:v1:" ‖ label)`; 
 ```shell
 MAINNET_RPC_URL=https://... forge script script/VerifyPreinstalls.s.sol
 ```
+
+## License
+
+Licensed under the [MIT License](LICENSE), matching the `SPDX-License-Identifier: MIT` header in every source file (changing it would change the compiled bytecode and the pinned addresses). Libraries under `lib/` keep their own licenses. The Konstellation name and logo are trademarks and are not licensed; see the [trademark policy](https://github.com/Konstellation-Network/.github).
